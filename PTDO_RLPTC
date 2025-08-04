@@ -1,0 +1,195 @@
+%%预设时间观测器加控制器
+clc;
+clear all;
+close all;
+xs(:,1) = [-2,-2,0.1]';
+xv(:,1) = [0.1,0,0]';
+tf=5;%控制器预设时间
+to=4;%观测器预设时间
+eta = 3;
+
+ts = 0.001;
+t_end = 120;
+t = 0:ts:t_end;
+[xd,xdd,xddd] = get_ref(ts,t_end);
+w(:,1)=[0;0;0];
+mu=0.3;
+sigma = 1 / mu;
+ka = (1/(tf+mu))+2;
+kc=ka/2+0.1;
+k1=3;
+k2 =30;
+k3=1;
+k=10;
+ko=20;
+d1 = 0.3;
+Wi(:,1)=[0.1;0.1;0.1;0.1;0.1];
+Wa(:,1)=[1;1;1;1;1];
+Wc(:,1)=[2;2;2;2;2];
+nWc(1)=norm(Wc(:,1));
+nWa(1)=norm(Wa(:,1));
+xi=[0.1;0.1;0.1];
+cost(1,1)=0;
+du=[0;0;0];
+umax=2;
+
+for i =1:size(t,2)
+    d(:,i)=[0.5+1*sin(0.01*t(i))-0.5*sin(0.1*t(i)) -0.9+sin(0.02*t(i)-pi/6)+0.5*cos(0.1*t(i)) -0.5*sin(0.09*t(i)+pi/3)+0.7*sin(0.01*t(i))]';
+    % d(:,i)=[1*sin(0.01*t(i)) 1*cos(0.01*t(i)) 0]';
+    psi=xs(3,i);
+    J=[cos(psi) -sin(psi) 0;sin(psi) cos(psi) 0;0 0 1];
+    x2(:,i)=J'*xv(:,i);
+    Vx1=abs(x2(1,i));%速度的绝对值
+    Vy1=abs(x2(2,i));
+    Vz1=abs(x2(3,i));
+    Vx=x2(1,i);
+    Vy=x2(2,i);
+    Vz=x2(3,i);
+    M=[20 0 0;0 19 0.72;0 0.72 2.7];
+    C=[0 0 -19*Vy-0.72*Vz;0 0 20*Vx;19*Vy+0.72*Vz -20*Vx 0];
+    D=[0.72+1.3*Vx1+5.8*Vx^2 0 0;0 0.86+36*Vy1+3*Vz1 -0.1-2*Vy1+2*Vz1;0 -0.1-5*Vy1+3*Vz1 6+4*Vy1+4*Vz1];
+    C0=-J*inv(M)*C*J';
+    Jd=[-sin(psi)*Vz -cos(psi)*Vz 0;cos(psi)*Vz -sin(psi)*Vz 0;0 0 0];
+    D0=Jd*J'-J*inv(M)*D*J';
+    f = C0+D0;
+    
+    if t(i) <tf
+        
+        Pt(i)=1/(tf-t(i)+mu);
+        dPt(i) = 1/(tf-t(i)+mu)^2;
+    else
+        Pt(i)=(1 / mu) * tanh(sigma * (t(i) - tf)) + 1 / mu;
+        dPt(i)= (sigma / mu) * sech(sigma * (t(i) - tf))^2;
+    end
+    if t(i) <to
+        
+        Pto(i)=1/(to-t(i)+mu);
+        dPto(i) = 1/(to-t(i)+mu)^2;
+    else
+        Pto(i)=(1 / mu) * tanh(sigma * (t(i) - to)) + 1 / mu;
+        dPto(i)= (sigma / mu) * sech(sigma * (t(i) - to))^2;
+    end
+    
+    es(:,i) = xs(:,i)-xd(:,i);
+    g_hat(:,i) = w(:,i)+ko*Pto(i)*xv(:,i);
+    beta=-k1*Pt(i)*es(:,i)+xdd(:,i);
+    ev(:,i) = xv(:,i)-beta;
+    des = xv(:,i)-xdd(:,i);
+    dbeta = -k1*Pt(i)*des-k1*dPt(i)*es(:,i)+xddd(:,i);
+    %%神经网络部分
+    NN.nodes = 5;          % 隐藏层节点数
+    NN.sigma = 2;          % RBF基函数宽度
+    NN.centers = linspace(-5,5,NN.nodes)'; % RBF中心点
+    phi_id(:,1) = exp(-(ev(1,i) - NN.centers).^2/(2*NN.sigma^2));
+    phi_id(:,2) = exp(-(ev(2,i) - NN.centers).^2/(2*NN.sigma^2));
+    phi_id(:,3) = exp(-(ev(3,i) - NN.centers).^2/(2*NN.sigma^2));
+    
+    u_hat=dbeta-g_hat(:,i)-es(:,i)-k2*Pt(i)*ev(:,i)+1.5*ev(:,i)-phi_id'*Wa(:,i);
+    
+    if u_hat(1) >umax
+        du(1) = u_hat(1)-umax;
+    elseif u_hat(1) <-umax
+        du(1) = -umax-u_hat(1);
+    else
+        du(1) = 0;
+    end
+    if u_hat(2) >umax
+        du(2) = u_hat(2)-umax;
+    elseif u_hat(2) <-umax
+        du(2) = -umax-u_hat(2);
+    else
+        du(2) = 0;
+    end
+    if u_hat(3) >umax
+        du(3) = u_hat(3)-umax;
+    elseif u_hat(3) <-umax
+        du(3) = -umax-u_hat(3);
+    else
+        du(3) = 0;
+    end
+    
+    u(:,i)=dbeta-g_hat(:,i)-es(:,i)-k2*Pt(i)*ev(:,i)+1.5*ev(:,i)-phi_id'*Wa(:,i)-k3*xi-du;
+    u(:,i)=max(min(u(:,i), umax), -umax);
+    
+    dw=-ko*Pto(i)*w(:,i)-ko*Pto(i)*(u(:,i)+ko*Pto(i)*xv(:,i))-ko*dPto(i)*xv(:,i);
+    ddx(:,i)=f*xv(:,i)+u(:,i)+d(:,i);
+    xs(:,i+1)=xs(:,i)+ts*xv(:,i);
+    xv(:,i+1)=xv(:,i)+ts*ddx(:,i);
+    w(:,i+1)=w(:,i)+ts*dw;
+    g(:,i)=f*xv(:,i)+d(:,i);
+    dWc=-kc*(phi_id*phi_id'+0.5*eye(5))*Wc(:,i);
+    dWa=-ka*(phi_id*phi_id'+0.5*eye(5))*((Wa(:,i)-Wc(:,i))+(kc/ka)*Wc(:,i));
+    
+    Wc(:,i+1)=Wc(:,i)+dWc*ts;
+    Wa(:,i+1)=Wa(:,i)+dWa*ts;
+    nWc(1,i)=norm(Wc(:,i+1));
+    nWa(1,i)=norm(Wa(:,i+1));
+    if du(1)==0
+        dxi(1)=-k3*ev(1,i)-Pt(i)*xi(1);
+    else
+        dxi(1)=-k3*ev(1,i)-Pt(i)*xi(1)-abs(ev(1,i)'*du(1)')/norm(xi(1))^2;
+    end
+    if du(2)==0
+        dxi(2)=-k3*ev(2,i)-Pt(i)*xi(2);
+    else
+        dxi(2)=-k3*ev(2,i)-Pt(i)*xi(2)-abs(ev(2,i)'*du(2)')/norm(xi(2))^2;
+    end
+    if du(3)==0
+        dxi(3)=-k3*ev(3,i)-Pt(i)*xi(3);
+    else
+        dxi(3)=-k3*ev(3,i)-Pt(i)*xi(3)-abs(ev(3,i)'*du(3)')/norm(xi(3))^2;
+    end
+    xi=xi+dxi'*ts;
+    cost(1,i)=ev(:,i)'*ev(:,i)+u(:,i)'*u(:,i);
+    eg(:,i)=g_hat(:,i)-g(:,i);
+    neg(1,i)=norm(eg(:,i));
+    ne1(1,i)=norm(es(:,i));
+    nev(1,i)=norm(ev(:,i));
+end
+aa = sum(ne1(1:5000));
+zz=-5:0.1:5;
+zzt=tf*ones(1,size(zz,2));
+figure(1)
+plot(xs(1,:),xs(2,:),'r');
+hold on;
+plot(xd(1,:),xd(2,:),'k');
+legend('ship','ref')
+hold on;
+% figure(2)
+% plot(t,es(1,:),'k');
+% hold on;
+% plot(t,es(2,:),'r');
+% hold on;
+% plot(zzt,zz,'b-.');
+% hold on;
+% ylim([-3 1]);
+% figure(3)
+% plot(t,u(1,:),'k');
+% hold on;
+% plot(t,u(2,:),'r');
+% hold on;
+% plot(t,u(3,:),'b');
+% legend('u1','u2','u3');
+% hold on;
+% figure(4)
+% plot(t,g(1,:),'r');
+% hold on;
+% plot(t,g_hat(1,:),'k');
+% hold on;
+% legend('g1','ghat1');
+% figure(5)
+% plot(t,cost,'k');
+% hold on;
+% legend('Cost');
+% figure(6)
+% plot(t,nWc,'r');
+% hold on;
+% plot(t,nWa,'k');
+% hold on;
+% legend('||Wc||','||Wa||');
+% figure(7)
+% plot(t,Pt,'k');
+% hold on;
+% figure(8)
+% plot(t,dPt,'k');
+% hold on;
